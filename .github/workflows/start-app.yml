@@ -1,9 +1,8 @@
 name: Keep SAP BTP App Alive
 
-# 触发条件：每天UTC时间8点运行，同时允许手动触发
 on:
   schedule:
-    - cron: '0 8 * * *'  # 每天UTC 8点自动运行，可根据需要调整
+    - cron: '0 8 * * *'  # 每天UTC 8点自动运行
   workflow_dispatch:     # 允许手动触发
 
 jobs:
@@ -15,33 +14,55 @@ jobs:
 
       - name: Install Cloud Foundry CLI
         run: |
+          # 确保日志文件存在
+          touch /tmp/btp_operations.log
+          
           # 安装CF CLI
+          echo "=== Installing CF CLI ===" | tee -a /tmp/btp_operations.log
           wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
+          if [ $? -ne 0 ]; then
+            echo "=== Failed to download CF CLI ===" | tee -a /tmp/btp_operations.log
+            exit 1
+          fi
           sudo tar -zxvf cf.tgz -C /usr/local/bin
-          cf --version
-          echo "CF CLI installed successfully"
+          cf --version | tee -a /tmp/btp_operations.log
+          echo "CF CLI installed successfully" | tee -a /tmp/btp_operations.log
 
       - name: Login to SAP BTP and access app
         id: btp-operations
+        continue-on-error: true  # 出错继续执行以收集日志
         run: |
-          echo "=== Starting SAP BTP operations ==="
+          echo "=== Starting SAP BTP operations ===" | tee -a /tmp/btp_operations.log
+          
+          # 检查必要的环境变量
+          if [ -z "${{ secrets.CF_API_URL }}" ] || [ -z "${{ secrets.CF_USERNAME }}" ] || [ -z "${{ secrets.CF_PASSWORD }}" ]; then
+            echo "=== Missing required secrets ===" | tee -a /tmp/btp_operations.log
+            exit 1
+          fi
           
           # 登录到SAP BTP
+          echo "=== Logging in to SAP BTP ===" | tee -a /tmp/btp_operations.log
           cf login \
             -a "${{ secrets.CF_API_URL }}" \
             -u "${{ secrets.CF_USERNAME }}" \
             -p "${{ secrets.CF_PASSWORD }}" \
             -o "${{ secrets.CF_ORG }}" \
             -s "${{ secrets.CF_SPACE }}" \
-            --skip-ssl-validation 2>&1 | tee /tmp/btp_operations.log
+            --skip-ssl-validation 2>&1 | tee -a /tmp/btp_operations.log
           
-          # 获取应用列表（验证登录成功）
-          echo "=== Retrieving app list ==="
+          # 检查登录是否成功
+          if [ $? -ne 0 ]; then
+            echo "=== Login failed ===" | tee -a /tmp/btp_operations.log
+            exit 8  # 明确捕获登录失败的退出码
+          fi
+          
+          # 获取应用列表
+          echo "=== Retrieving app list ===" | tee -a /tmp/btp_operations.log
           cf apps 2>&1 | tee -a /tmp/btp_operations.log
           
-          # 如果知道应用名称，可以直接访问应用以保持活跃
+          # 访问应用以保持活跃
           if [ -n "${{ secrets.APP_NAME }}" ]; then
-            echo "=== Accessing app ${{ secrets.APP_NAME }} ==="
+            echo "=== Accessing app ${{ secrets.APP_NAME }} ===" | tee -a /tmp/btp_operations.log
             APP_URL=$(cf app ${{ secrets.APP_NAME }} | grep -o 'https://[^ ]*')
             if [ -n "$APP_URL" ]; then
               curl -s -L -w "HTTP Status: %{http_code}\n" "$APP_URL" -o /dev/null 2>&1 | tee -a /tmp/btp_operations.log
@@ -49,12 +70,17 @@ jobs:
             else
               echo "Could not retrieve URL for app ${{ secrets.APP_NAME }}" | tee -a /tmp/btp_operations.log
             fi
+          else
+            echo "=== APP_NAME secret not set, skipping app access ===" | tee -a /tmp/btp_operations.log
           fi
 
       - name: Save operation logs
         if: always()
-        uses: actions/upload-artifact@v4  # 使用最新的v4版本
+        uses: actions/upload-artifact@v4
         with:
           name: btp-operation-logs
-          path: /tmp/btp_operations.log
-          retention-days: 7  # 日志保留7天
+          path: |
+            /tmp/btp_operations.log
+            # 确保即使主日志文件缺失也不会完全失败
+          if-no-files-found: warn  # 找不到文件时仅警告而非失败
+          retention-days: 7
