@@ -2,52 +2,47 @@ name: Daily Startup for SAP BTP App
 
 on:
   schedule:
-    - cron: '0 8 * * *' # 每天UTC时间8点运行
+    - cron: '0 8 * * *'
   workflow_dispatch:
 
 jobs:
   start-app:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Install CF CLI
+        run: |
+          wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
+          sudo tar -zxvf cf.tgz -C /usr/local/bin
+          cf --version
 
-    - name: Install CF CLI
-      run: |
-        # 下载并安装 CF CLI v8
-        wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
-        sudo tar -zxvf cf.tgz -C /usr/local/bin
-        cf --version
+      - name: Debug - Show masked secrets (for verification)
+        run: |
+          echo "API Endpoint: ${{ secrets.CF_API_URL }}"
+          echo "Username: ${{ secrets.CF_USERNAME }}"
+          echo "Organization: ${{ secrets.CF_ORG }}"
+          echo "Space: ${{ secrets.CF_SPACE }}"
+          echo "App Name: ${{ secrets.CF_APP_NAME }}"
+          # The actual values are masked by GitHub, but this confirms the step runs.
 
-    - name: Debug - Show secrets (masked)
-      run: |
-        echo "API URL: ${{ secrets.CF_API_URL }}"
-        echo "Username: ${{ secrets.CF_USERNAME }}"
-        echo "Org: ${{ secrets.CF_ORG }}"
-        echo "Space: ${{ secrets.CF_SPACE }}"
-        echo "App: ${{ secrets.CF_APP_NAME }}"
+      - name: Attempt Login with Trace (This will reveal the true error)
+        run: |
+          # The CF_TRACE=true environment variable will print detailed logs to stderr
+          CF_TRACE=true cf login -a "${{ secrets.CF_API_URL }}" \
+                   -u "${{ secrets.CF_USERNAME }}" \
+                   -p "${{ secrets.CF_PASSWORD }}" \
+                   -o "${{ secrets.CF_ORG }}" \
+                   -s "${{ secrets.CF_SPACE }}" \
+                   --skip-ssl-validation # Skip SSL verification if needed, but try without first.
+        continue-on-error: true # This allows the next step to run even if login fails
 
-    - name: Login to SAP BTP
-      run: |
-        cf login -a "${{ secrets.CF_API_URL }}" \
-                 -u "${{ secrets.CF_USERNAME }}" \
-                 -p "${{ secrets.CF_PASSWORD }}" \
-                 -o "${{ secrets.CF_ORG }}" \
-                 -s "${{ secrets.CF_SPACE }}" \
-                 --skip-ssl-validation
-        
-        # 显示登录后的目标信息
-        cf target
+      - name: Final Login Attempt
+        run: |
+          # This is the clean attempt after we've seen the trace logs
+          cf login -a "${{ secrets.CF_API_URL }}" \
+                   -u "${{ secrets.CF_USERNAME }}" \
+                   -p "${{ secrets.CF_PASSWORD }}" \
+                   -o "${{ secrets.CF_ORG }}" \
+                   -s "${{ secrets.CF_SPACE }}"
 
-    - name: Check app status
-      run: |
-        cf app "${{ secrets.CF_APP_NAME }}" || echo "Unable to get app status"
-
-    - name: Start Application
-      run: |
-        # 尝试启动应用
-        cf start "${{ secrets.CF_APP_NAME }}"
-        
-        # 等待几秒后再次检查状态
-        sleep 5
-        cf app "${{ secrets.CF_APP_NAME }}"
+      - name: Start Application
+        run: cf start "${{ secrets.CF_APP_NAME }}"
