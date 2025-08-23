@@ -12,32 +12,48 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Cloud Foundry CLI
+      - name: Install Cloud Foundry CLI (with strict checks)
         run: |
-          # 确保日志文件存在
+          # 初始化日志文件并确保权限
           touch /tmp/btp_operations.log
+          chmod 666 /tmp/btp_operations.log  # 确保可写
+          echo "=== Starting CF CLI installation ===" | tee -a /tmp/btp_operations.log
+
+          # 下载CF CLI（使用详细输出模式）
+          echo "=== Downloading CF CLI ===" | tee -a /tmp/btp_operations.log
+          wget -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github" 2>&1 | tee -a /tmp/btp_operations.log
           
-          # 安装CF CLI
-          echo "=== Installing CF CLI ===" | tee -a /tmp/btp_operations.log
-          wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
-          if [ $? -ne 0 ]; then
-            echo "=== Failed to download CF CLI ===" | tee -a /tmp/btp_operations.log
-            exit 1
+          # 检查下载是否成功（文件是否存在且大小合理）
+          if [ ! -f "cf.tgz" ] || [ $(stat -c%s "cf.tgz") -lt 1000000 ]; then  # 至少1MB
+            echo "=== Failed: CF CLI下载文件不存在或不完整 ===" | tee -a /tmp/btp_operations.log
+            exit 2  # 用exit 2标识下载失败（区别于登录失败的exit 8）
           fi
-          sudo tar -zxvf cf.tgz -C /usr/local/bin
-          cf --version | tee -a /tmp/btp_operations.log
-          echo "CF CLI installed successfully" | tee -a /tmp/btp_operations.log
+
+          # 解压CF CLI
+          echo "=== Extracting CF CLI ===" | tee -a /tmp/btp_operations.log
+          sudo tar -zxvf cf.tgz -C /usr/local/bin 2>&1 | tee -a /tmp/btp_operations.log
+          
+          # 检查解压是否成功（cf命令是否存在）
+          if ! command -v cf &> /dev/null; then
+            echo "=== Failed: CF CLI解压失败，未找到cf命令 ===" | tee -a /tmp/btp_operations.log
+            exit 3  # 用exit 3标识解压失败
+          fi
+
+          # 验证CF CLI版本
+          echo "=== Verifying CF CLI version ===" | tee -a /tmp/btp_operations.log
+          cf --version 2>&1 | tee -a /tmp/btp_operations.log
+          echo "=== CF CLI installed successfully ===" | tee -a /tmp/btp_operations.log
 
       - name: Login to SAP BTP and access app
         id: btp-operations
-        continue-on-error: true  # 出错继续执行以收集日志
+        continue-on-error: true
         run: |
           echo "=== Starting SAP BTP operations ===" | tee -a /tmp/btp_operations.log
           
           # 检查必要的环境变量
           if [ -z "${{ secrets.CF_API_URL }}" ] || [ -z "${{ secrets.CF_USERNAME }}" ] || [ -z "${{ secrets.CF_PASSWORD }}" ]; then
-            echo "=== Missing required secrets ===" | tee -a /tmp/btp_operations.log
-            exit 1
+            echo "=== Failed: 缺少必要的secrets（CF_API_URL/CF_USERNAME/CF_PASSWORD） ===" | tee -a /tmp/btp_operations.log
+            exit 4  # 环境变量缺失
           fi
           
           # 登录到SAP BTP
@@ -52,15 +68,14 @@ jobs:
           
           # 检查登录是否成功
           if [ $? -ne 0 ]; then
-            echo "=== Login failed ===" | tee -a /tmp/btp_operations.log
-            exit 8  # 明确捕获登录失败的退出码
+            echo "=== Failed: SAP BTP登录失败 ===" | tee -a /tmp/btp_operations.log
+            exit 8  # 登录失败（保持原exit code便于识别）
           fi
           
-          # 获取应用列表
+          # 后续操作（获取应用列表、访问应用）
           echo "=== Retrieving app list ===" | tee -a /tmp/btp_operations.log
           cf apps 2>&1 | tee -a /tmp/btp_operations.log
           
-          # 访问应用以保持活跃
           if [ -n "${{ secrets.APP_NAME }}" ]; then
             echo "=== Accessing app ${{ secrets.APP_NAME }} ===" | tee -a /tmp/btp_operations.log
             APP_URL=$(cf app ${{ secrets.APP_NAME }} | grep -o 'https://[^ ]*')
@@ -68,10 +83,8 @@ jobs:
               curl -s -L -w "HTTP Status: %{http_code}\n" "$APP_URL" -o /dev/null 2>&1 | tee -a /tmp/btp_operations.log
               echo "Successfully accessed app URL: $APP_URL" | tee -a /tmp/btp_operations.log
             else
-              echo "Could not retrieve URL for app ${{ secrets.APP_NAME }}" | tee -a /tmp/btp_operations.log
+              echo "=== Warning: 无法获取应用$APP_NAME的URL ===" | tee -a /tmp/btp_operations.log
             fi
-          else
-            echo "=== APP_NAME secret not set, skipping app access ===" | tee -a /tmp/btp_operations.log
           fi
 
       - name: Save operation logs
@@ -79,8 +92,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: btp-operation-logs
-          path: |
-            /tmp/btp_operations.log
-            # 确保即使主日志文件缺失也不会完全失败
-          if-no-files-found: warn  # 找不到文件时仅警告而非失败
+          path: /tmp/btp_operations.log
+          if-no-files-found: warn
           retention-days: 7
