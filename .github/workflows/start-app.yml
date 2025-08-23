@@ -1,141 +1,60 @@
-name: Enhanced SAP BTP Login Diagnostics
+name: Keep SAP BTP App Alive
 
+# 触发条件：每天UTC时间8点运行，同时允许手动触发
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * *'  # 每天UTC 8点自动运行，可根据需要调整
+  workflow_dispatch:     # 允许手动触发
 
 jobs:
-  diagnose:
+  keep-alive:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install CF CLI and tools
+      - name: Install Cloud Foundry CLI
         run: |
-          # 安装 CF CLI
+          # 安装CF CLI
           wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
           sudo tar -zxvf cf.tgz -C /usr/local/bin
-          
-          # 安装网络诊断工具
-          sudo apt-get update
-          sudo apt-get install -y dnsutils curl netcat-openbsd
-          
           cf --version
-          echo "Tools installed successfully"
+          echo "CF CLI installed successfully"
 
-      - name: Network connectivity test
+      - name: Login to SAP BTP and access app
+        id: btp-operations
         run: |
-          echo "=== Network Connectivity Test ==="
-          API_HOST=$(echo "${{ secrets.CF_API_URL }}" | sed 's|https://||' | sed 's|/.*||')
-          echo "Testing connection to: $API_HOST"
+          echo "=== Starting SAP BTP operations ==="
           
-          # 测试基本连接
-          echo "1. Testing ping (可能被防火墙阻止):"
-          ping -c 3 -W 5 $API_HOST || echo "Ping test failed (这可能是正常的)"
+          # 登录到SAP BTP
+          cf login \
+            -a "${{ secrets.CF_API_URL }}" \
+            -u "${{ secrets.CF_USERNAME }}" \
+            -p "${{ secrets.CF_PASSWORD }}" \
+            -o "${{ secrets.CF_ORG }}" \
+            -s "${{ secrets.CF_SPACE }}" \
+            --skip-ssl-validation 2>&1 | tee /tmp/btp_operations.log
           
-          # 测试端口连接
-          echo "2. Testing port 443 connectivity:"
-          timeout 10 nc -zv -w 5 $API_HOST 443 && echo "Port 443 is open" || echo "Port 443 test failed"
+          # 获取应用列表（验证登录成功）
+          echo "=== Retrieving app list ==="
+          cf apps 2>&1 | tee -a /tmp/btp_operations.log
           
-          # 测试HTTPS连接
-          echo "3. Testing HTTPS connection:"
-          curl -s -v -o /dev/null --connect-timeout 10 "${{ secrets.CF_API_URL }}/info" 2>&1 | grep -E "(HTTP/|SSL|Connected to)" || echo "HTTPS test failed"
-          
-          # DNS解析测试
-          echo "4. DNS resolution:"
-          dig +short $API_HOST || nslookup $API_HOST || echo "DNS resolution failed"
-
-      - name: Set up environment
-        run: |
-          # 设置环境变量
-          export CF_HOME=/tmp/cf_config
-          mkdir -p $CF_HOME
-          export CF_TRACE=true
-          echo "CF environment set up at $CF_HOME"
-
-      - name: Attempt login with detailed capture
-        id: login-attempt
-        run: |
-          echo "=== Login Attempt with Detailed Capture ==="
-          
-          # 方法1: 直接运行并捕获所有输出
-          {
-            echo "尝试登录命令..."
-            cf login -a "${{ secrets.CF_API_URL }}" \
-                     -u "zy2561568435%40163.com" \
-                     -p "521609Zy" \
-                     -o "${{ secrets.CF_ORG }}" \
-                     -s "${{ secrets.CF_SPACE }}" \
-                     --skip-ssl-validation
-          } > /tmp/login_output.log 2>&1
-          
-          # 保存退出代码
-          LOGIN_EXIT=$?
-          echo "EXIT_CODE=$LOGIN_EXIT" >> $GITHUB_ENV
-          
-          # 显示输出（GitHub会自动掩码敏感信息）
-          echo "登录命令退出代码: $LOGIN_EXIT"
-          echo "登录命令输出:"
-          cat /tmp/login_output.log
-          
-          # 额外保存输出文件以供下载
-          echo "LOGIN_OUTPUT_FILE=/tmp/login_output.log" >> $GITHUB_ENV
-
-      - name: Save login output as artifact
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: login-debug-output
-          path: /tmp/login_output.log
-
-      - name: Alternative login method test
-        run: |
-          echo "=== Alternative Login Method ==="
-          echo "尝试使用API密钥方式登录（如果可用）..."
-          
-          # 清除之前的配置
-          rm -rf $CF_HOME/*
-          
-          # 尝试使用curl直接与API交互
-          echo "获取API信息:"
-          curl -s "${{ secrets.CF_API_URL }}/info" | head -20 || echo "API信息获取失败"
-          
-          echo "尝试OAuth令牌获取:"
-          # 这只是示例，实际需要正确的OAuth流程
-          curl -s -X POST -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=password&username=zy2561568435%40163.com&password=521609Zy" \
-            "${{ secrets.CF_API_URL }}/oauth/token" 2>/dev/null | head -50 || echo "OAuth尝试失败"
-
-      - name: Environment information
-        run: |
-          echo "=== Environment Information ==="
-          echo "GitHub Actions Runner IP:"
-          curl -s https://api.ipify.org
-          echo ""
-          echo "Current time: $(date)"
-          echo "Timezone: $(cat /etc/timezone)"
-          echo "OpenSSL version: $(openssl version)"
-
-      - name: Final analysis
-        if: always()
-        run: |
-          echo "=== Final Analysis ==="
-          echo "退出代码: ${{ env.EXIT_CODE }}"
-          
-          if [ "${{ env.EXIT_CODE }}" -eq 8 ]; then
-            echo "问题分析:"
-            echo "1. 认证失败 (退出代码 8)"
-            echo "2. 本地登录成功但GitHub Actions失败"
-            echo ""
-            echo "可能的原因:"
-            echo "A. IP限制: SAP BTP可能阻止了GitHub Actions的IP地址"
-            echo "B. 账户限制: 您的账户可能有地域或平台限制"
-            echo "C. 密码特殊字符: 密码中的字符在远程环境中处理方式不同"
-            echo "D. 时间同步问题: 服务器和客户端时间不同步可能导致认证失败"
-            echo ""
-            echo "建议的解决方案:"
-            echo "1. 联系SAP BTP支持，询问是否有IP限制"
-            echo "2. 尝试使用API密钥而不是用户名/密码"
-            echo "3. 创建一个新的测试账户和空间"
-            echo "4. 尝试在不同的GitHub区域运行工作流 (如美国或欧洲)"
+          # 如果知道应用名称，可以直接访问应用以保持活跃
+          if [ -n "${{ secrets.APP_NAME }}" ]; then
+            echo "=== Accessing app ${{ secrets.APP_NAME }} ==="
+            APP_URL=$(cf app ${{ secrets.APP_NAME }} | grep -o 'https://[^ ]*')
+            if [ -n "$APP_URL" ]; then
+              curl -s -L -w "HTTP Status: %{http_code}\n" "$APP_URL" -o /dev/null 2>&1 | tee -a /tmp/btp_operations.log
+              echo "Successfully accessed app URL: $APP_URL" | tee -a /tmp/btp_operations.log
+            else
+              echo "Could not retrieve URL for app ${{ secrets.APP_NAME }}" | tee -a /tmp/btp_operations.log
+            fi
           fi
+
+      - name: Save operation logs
+        if: always()
+        uses: actions/upload-artifact@v4  # 使用最新的v4版本
+        with:
+          name: btp-operation-logs
+          path: /tmp/btp_operations.log
+          retention-days: 7  # 日志保留7天
