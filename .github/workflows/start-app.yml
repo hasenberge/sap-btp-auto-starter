@@ -1,48 +1,67 @@
-name: Daily Startup for SAP BTP App
+name: SAP BTP App Auto-Starter
 
 on:
-  schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 先保持手动触发，直到问题解决
 
 jobs:
   start-app:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Install CF CLI
         run: |
           wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
           sudo tar -zxvf cf.tgz -C /usr/local/bin
           cf --version
 
-      - name: Debug - Show masked secrets (for verification)
+      - name: Network diagnostic
         run: |
+          echo "Testing connectivity to SAP BTP API..."
+          API_HOST=$(echo "${{ secrets.CF_API_URL }}" | sed 's|https://||' | sed 's|/.*||')
+          ping -c 3 $API_HOST || echo "Ping test completed"
+          echo "Testing HTTPS connectivity..."
+          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" "${{ secrets.CF_API_URL }}/v2/info" || echo "Curl test completed"
+
+      - name: Attempt Login with URL Encoding
+        run: |
+          echo "Attempting login with URL-encoded credentials..."
+          
+          # 使用 URL 编码的邮箱地址
+          cf login -a "${{ secrets.CF_API_URL }}" \
+                   -u "zy2561568435%40163.com" \
+                   -p "521609Zy" \
+                   -o "${{ secrets.CF_ORG }}" \
+                   -s "${{ secrets.CF_SPACE }}" \
+                   --skip-ssl-validation
+
+      - name: Check Current Target
+        if: success()
+        run: |
+          echo "Login successful! Current target:"
+          cf target
+          echo "Available apps:"
+          cf apps
+
+      - name: Start Application
+        if: success()
+        run: |
+          echo "Starting application: ${{ secrets.CF_APP_NAME }}"
+          cf start "${{ secrets.CF_APP_NAME }}"
+          echo "Application status:"
+          cf app "${{ secrets.CF_APP_NAME }}"
+          
+      - name: Report Failure
+        if: failure()
+        run: |
+          echo "=== LOGIN FAILURE ANALYSIS ==="
           echo "API Endpoint: ${{ secrets.CF_API_URL }}"
-          echo "Username: ${{ secrets.CF_USERNAME }}"
           echo "Organization: ${{ secrets.CF_ORG }}"
           echo "Space: ${{ secrets.CF_SPACE }}"
           echo "App Name: ${{ secrets.CF_APP_NAME }}"
-          # The actual values are masked by GitHub, but this confirms the step runs.
-
-      - name: Attempt Login with Trace (This will reveal the true error)
-        run: |
-          # The CF_TRACE=true environment variable will print detailed logs to stderr
-          CF_TRACE=true cf login -a "${{ secrets.CF_API_URL }}" \
-                   -u "${{ secrets.CF_USERNAME }}" \
-                   -p "${{ secrets.CF_PASSWORD }}" \
-                   -o "${{ secrets.CF_ORG }}" \
-                   -s "${{ secrets.CF_SPACE }}" \
-                   --skip-ssl-validation # Skip SSL verification if needed, but try without first.
-        continue-on-error: true # This allows the next step to run even if login fails
-
-      - name: Final Login Attempt
-        run: |
-          # This is the clean attempt after we've seen the trace logs
-          cf login -a "${{ secrets.CF_API_URL }}" \
-                   -u "${{ secrets.CF_USERNAME }}" \
-                   -p "${{ secrets.CF_PASSWORD }}" \
-                   -o "${{ secrets.CF_ORG }}" \
-                   -s "${{ secrets.CF_SPACE }}"
-
-      - name: Start Application
-        run: cf start "${{ secrets.CF_APP_NAME }}"
+          echo "============================="
+          echo "本地测试成功但GitHub Actions失败，可能原因:"
+          echo "1. GitHub Secrets中有隐藏字符"
+          echo "2. 网络连通性问题"
+          echo "3. 特殊字符处理差异"
