@@ -1,38 +1,53 @@
-name: Daily Startup for SAP BTP App  # 工作流的名称
+name: Daily Startup for SAP BTP App
 
-# 定义触发条件
 on:
   schedule:
-    # 使用 cron 语法定义时间表 (UTC 时间)
-    # 此例子是每天 UTC 时间 08:00 (即北京时间 16:00) 运行
-    # 在线工具： https://crontab.guru/#0_8_*_*_*
-    - cron: '0 1 * * *'
+    - cron: '0 8 * * *' # 每天UTC时间8点运行
+  workflow_dispatch:
 
-  workflow_dispatch: # 允许在 GitHub 页面上手动触发这个工作流
-
-# 任务定义
 jobs:
   start-app:
-    runs-on: ubuntu-latest # 任务将在最新的 Ubuntu 系统上运行
-
+    runs-on: ubuntu-latest
     steps:
-      # 步骤1: 安装 CF CLI
-      - name: Install CF CLI
-        run: |
-          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
-          echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
-          sudo apt-get update
-          sudo apt-get install -y cf8-cli
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      # 步骤2: 登录到 SAP BTP CF 环境
-      - name: Login to SAP BTP
-        run: |
-          cf login -a "${{ secrets.CF_API_URL }}" \
-                   -u "${{ secrets.CF_USERNAME }}" \
-                   -p "${{ secrets.CF_PASSWORD }}" \
-                   -o "${{ secrets.CF_ORG }}" \
-                   -s "${{ secrets.CF_SPACE }}"
+    - name: Install CF CLI
+      run: |
+        # 下载并安装 CF CLI v8
+        wget -q -O cf.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8&source=github"
+        sudo tar -zxvf cf.tgz -C /usr/local/bin
+        cf --version
 
-      # 步骤3: 启动应用程序
-      - name: Start Application
-        run: cf start "${{ secrets.CF_APP_NAME }}"
+    - name: Debug - Show secrets (masked)
+      run: |
+        echo "API URL: ${{ secrets.CF_API_URL }}"
+        echo "Username: ${{ secrets.CF_USERNAME }}"
+        echo "Org: ${{ secrets.CF_ORG }}"
+        echo "Space: ${{ secrets.CF_SPACE }}"
+        echo "App: ${{ secrets.CF_APP_NAME }}"
+
+    - name: Login to SAP BTP
+      run: |
+        cf login -a "${{ secrets.CF_API_URL }}" \
+                 -u "${{ secrets.CF_USERNAME }}" \
+                 -p "${{ secrets.CF_PASSWORD }}" \
+                 -o "${{ secrets.CF_ORG }}" \
+                 -s "${{ secrets.CF_SPACE }}" \
+                 --skip-ssl-validation
+        
+        # 显示登录后的目标信息
+        cf target
+
+    - name: Check app status
+      run: |
+        cf app "${{ secrets.CF_APP_NAME }}" || echo "Unable to get app status"
+
+    - name: Start Application
+      run: |
+        # 尝试启动应用
+        cf start "${{ secrets.CF_APP_NAME }}"
+        
+        # 等待几秒后再次检查状态
+        sleep 5
+        cf app "${{ secrets.CF_APP_NAME }}"
