@@ -1,0 +1,38 @@
+name: Daily Startup for SAP BTP App  # 工作流的名称
+
+# 定义触发条件
+on:
+  schedule:
+    # 使用 cron 语法定义时间表 (UTC 时间)
+    # 此例子是每天 UTC 时间 08:00 (即北京时间 16:00) 运行
+    # 在线工具： https://crontab.guru/#0_8_*_*_*
+    - cron: '0 1 * * *'
+
+  workflow_dispatch: # 允许在 GitHub 页面上手动触发这个工作流
+
+# 任务定义
+jobs:
+  start-app:
+    runs-on: ubuntu-latest # 任务将在最新的 Ubuntu 系统上运行
+
+    steps:
+      # 步骤1: 安装 CF CLI
+      - name: Install CF CLI
+        run: |
+          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
+          echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+          sudo apt-get update
+          sudo apt-get install -y cf8-cli
+
+      # 步骤2: 登录到 SAP BTP CF 环境
+      - name: Login to SAP BTP
+        run: |
+          cf login -a "${{ secrets.CF_API_URL }}" \
+                   -u "${{ secrets.CF_USERNAME }}" \
+                   -p "${{ secrets.CF_PASSWORD }}" \
+                   -o "${{ secrets.CF_ORG }}" \
+                   -s "${{ secrets.CF_SPACE }}"
+
+      # 步骤3: 启动应用程序
+      - name: Start Application
+        run: cf start "${{ secrets.CF_APP_NAME }}"
