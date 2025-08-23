@@ -1,10 +1,10 @@
-name: SAP BTP App Auto-Starter
+name: SAP BTP App Auto-Starter - Diagnostic Mode
 
 on:
-  workflow_dispatch: # 先保持手动触发，直到问题解决
+  workflow_dispatch:
 
 jobs:
-  start-app:
+  diagnose-login:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -16,52 +16,95 @@ jobs:
           sudo tar -zxvf cf.tgz -C /usr/local/bin
           cf --version
 
-      - name: Network diagnostic
+      - name: Set up diagnostic environment
         run: |
-          echo "Testing connectivity to SAP BTP API..."
-          API_HOST=$(echo "${{ secrets.CF_API_URL }}" | sed 's|https://||' | sed 's|/.*||')
-          ping -c 3 $API_HOST || echo "Ping test completed"
-          echo "Testing HTTPS connectivity..."
-          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" "${{ secrets.CF_API_URL }}/v2/info" || echo "Curl test completed"
+          # 启用详细跟踪
+          export CF_TRACE=/tmp/cf_trace.log
+          export CF_TRACE=true  # 同时输出到stderr
+          export CF_DIAL_TIMEOUT=30
+          echo "CF_TRACE enabled, logs will be saved to /tmp/cf_trace.log"
 
-      - name: Attempt Login with URL Encoding
+      - name: Attempt login with full diagnostics
+        id: login-attempt
         run: |
-          echo "Attempting login with URL-encoded credentials..."
+          echo "=== Starting login attempt ==="
+          echo "API Endpoint: ${{ secrets.CF_API_URL }}"
+          echo "Username: zy2561568435%40163.com"
+          echo "Organization: ${{ secrets.CF_ORG }}"
+          echo "Space: ${{ secrets.CF_SPACE }}"
           
-          # 使用 URL 编码的邮箱地址
+          # 执行登录命令，捕获所有输出
+          set +e  # 禁用"出错即退出"模式
           cf login -a "${{ secrets.CF_API_URL }}" \
                    -u "zy2561568435%40163.com" \
                    -p "521609Zy" \
                    -o "${{ secrets.CF_ORG }}" \
                    -s "${{ secrets.CF_SPACE }}" \
                    --skip-ssl-validation
-
-      - name: Check Current Target
-        if: success()
-        run: |
-          echo "Login successful! Current target:"
-          cf target
-          echo "Available apps:"
-          cf apps
-
-      - name: Start Application
-        if: success()
-        run: |
-          echo "Starting application: ${{ secrets.CF_APP_NAME }}"
-          cf start "${{ secrets.CF_APP_NAME }}"
-          echo "Application status:"
-          cf app "${{ secrets.CF_APP_NAME }}"
           
-      - name: Report Failure
-        if: failure()
+          login_exit_code=$?
+          echo "Login command exited with code: $login_exit_code"
+          set -e  # 重新启用"出错即退出"模式
+          
+          # 保存退出代码供后续步骤使用
+          echo "EXIT_CODE=$login_exit_code" >> $GITHUB_ENV
+
+      - name: Capture and display trace logs
+        if: always()
         run: |
-          echo "=== LOGIN FAILURE ANALYSIS ==="
-          echo "API Endpoint: ${{ secrets.CF_API_URL }}"
-          echo "Organization: ${{ secrets.CF_ORG }}"
-          echo "Space: ${{ secrets.CF_SPACE }}"
-          echo "App Name: ${{ secrets.CF_APP_NAME }}"
-          echo "============================="
-          echo "本地测试成功但GitHub Actions失败，可能原因:"
-          echo "1. GitHub Secrets中有隐藏字符"
-          echo "2. 网络连通性问题"
-          echo "3. 特殊字符处理差异"
+          echo "=== CF_TRACE Log Contents ==="
+          cat /tmp/cf_trace.log || echo "No trace log found"
+          echo "=== End of CF_TRACE Log ==="
+
+      - name: Run network diagnostics
+        if: always()
+        run: |
+          echo "=== Network Diagnostics ==="
+          API_HOST=$(echo "${{ secrets.CF_API_URL }}" | sed 's|https://||' | sed 's|/.*||')
+          echo "Testing connectivity to: $API_HOST"
+          
+          # 测试基本连接
+          timeout 10 ping -c 3 $API_HOST || echo "Ping test failed or timed out"
+          
+          # 测试HTTPS连接
+          echo "Testing HTTPS connection..."
+          curl -s -v -o /dev/null --connect-timeout 10 "${{ secrets.CF_API_URL }}/info" 2>&1 | grep -E "(HTTP/|SSL|Connected to)" || echo "Curl test failed"
+          
+          # 检查DNS解析
+          echo "DNS resolution:"
+          nslookup $API_HOST || echo "NSLookup failed"
+
+      - name: Analyze results
+        if: always()
+        run: |
+          echo "=== Analysis ==="
+          echo "Exit code: ${{ env.EXIT_CODE }}"
+          
+          if [ "${{ env.EXIT_CODE }}" -eq 0 ]; then
+            echo "SUCCESS: Login completed successfully!"
+          elif [ "${{ env.EXIT_CODE }}" -eq 8 ]; then
+            echo "FAILURE: Authentication failed (exit code 8)"
+            echo "This typically indicates:"
+            echo "1. Incorrect username or password"
+            echo "2. User doesn't have access to the specified org/space"
+            echo "3. Account is locked or disabled"
+            echo "4. API endpoint is incorrect"
+          else
+            echo "FAILURE: Unknown error (exit code ${{ env.EXIT_CODE }})"
+          fi
+
+      - name: Final report
+        if: always()
+        run: |
+          echo "=== Final Report ==="
+          echo "Local login works but GitHub Actions fails."
+          echo "This suggests one of the following:"
+          echo "1. Network restrictions blocking GitHub Actions IP ranges"
+          echo "2. SAP BTP account has IP whitelisting enabled"
+          echo "3. Account has region-specific restrictions"
+          echo "4. Password contains characters that behave differently in different environments"
+          echo ""
+          echo "Recommended next steps:"
+          echo "1. Check SAP BTP account for IP restrictions"
+          echo "2. Try a simpler password (letters and numbers only)"
+          echo "3. Contact SAP BTP support regarding authentication from GitHub Actions"
