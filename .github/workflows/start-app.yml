@@ -2,7 +2,7 @@ name: Keep SAP BTP App Alive
 
 on:
   schedule:
-     - cron: '55 1 * * *'  # 每天北京时间9点10分运行（UTC时间1点10分）
+     - cron: '0 0 * * *'  # 每天北京时间9点10分运行（UTC时间1点10分）
   workflow_dispatch:     # 允许手动触发
 jobs:
   keep-alive:
